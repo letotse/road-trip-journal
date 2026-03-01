@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Road Trip Journal Pro + Weather</title>
+    <title>Road Trip Journal Master</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         :root { --bg: #ffffff; --text: #333; --sidebar: #f4f4f4; --border: #ddd; }
@@ -13,13 +13,15 @@
         #main { display: flex; flex: 1; overflow: hidden; }
         #map { flex: 2; height: 100%; border-right: 1px solid var(--border); }
         #sidebar { flex: 1; padding: 20px; overflow-y: auto; background: var(--sidebar); }
-        .log-entry { background: var(--bg); padding: 12px; margin-bottom: 10px; border-left: 4px solid #3498db; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .log-entry { background: var(--bg); padding: 12px; margin-bottom: 10px; border-left: 4px solid #3498db; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); position: relative; }
         .weather-tag { font-size: 0.85em; color: #7f8c8d; font-style: italic; margin-top: 5px; display: block; }
         input, textarea { width: 100%; padding: 8px; margin: 5px 0; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); }
         .btn { padding: 8px 12px; cursor: pointer; border-radius: 4px; border: none; font-weight: bold; margin: 2px; }
         .btn-add { background: #27ae60; color: white; width: 100%; margin: 10px 0; }
-        .btn-file { background: #34495e; color: white; font-size: 11px; }
-        @media print { header, .btn-add, input, textarea, hr, .btn { display: none !important; } #main { display: block; } #map { height: 350px; } }
+        .btn-edit { background: #f39c12; color: white; font-size: 10px; padding: 4px 8px; }
+        .btn-del { background: #c0392b; color: white; font-size: 10px; padding: 4px 8px; }
+        .entry-controls { margin-top: 10px; display: flex; gap: 5px; }
+        @media print { header, .btn-add, input, textarea, hr, .btn, .entry-controls { display: none !important; } #main { display: block; } #map { height: 350px; } }
         body.dark-mode .leaflet-tile { filter: brightness(0.6) invert(1) contrast(3) hue-rotate(200deg); }
     </style>
 </head>
@@ -28,9 +30,9 @@
 <header>
     <h3>📍 Trip Journal</h3>
     <div>
-        <button class="btn btn-file" onclick="window.print()">🖨️ PDF</button>
-        <button class="btn btn-file" onclick="exportTrip()">📤 Export</button>
-        <button class="btn btn-file" onclick="document.getElementById('importFile').click()">📥 Import</button>
+        <button class="btn" style="background:#e67e22;" onclick="window.print()">🖨️ PDF</button>
+        <button class="btn" style="background:#34495e;" onclick="exportTrip()">📤 Export</button>
+        <button class="btn" style="background:#34495e;" onclick="document.getElementById('importFile').click()">📥 Import</button>
         <input type="file" id="importFile" hidden onchange="importTrip(event)">
         <button class="btn" style="background:#7f8c8d;" onclick="document.body.classList.toggle('dark-mode')">🌓</button>
     </div>
@@ -39,10 +41,13 @@
 <div id="main">
     <div id="map"></div>
     <div id="sidebar">
+        <h4 id="form-title">New Entry</h4>
+        <input type="hidden" id="edit-index" value="-1">
         <input type="text" id="location" placeholder="City, State">
         <input type="date" id="date">
-        <textarea id="summary" placeholder="What was the highlight today?"></textarea>
-        <button class="btn btn-add" onclick="addEntry()">Pin & Save Stop</button>
+        <textarea id="summary" placeholder="What happened today?"></textarea>
+        <button id="submit-btn" class="btn btn-add" onclick="handleSubmit()">Pin & Save Stop</button>
+        <button id="cancel-btn" class="btn" style="display:none; background:#95a5a6; color:white; width:100%;" onclick="resetForm()">Cancel Edit</button>
         <hr style="border:0; border-top:1px solid var(--border); margin:20px 0;">
         <div id="journal-feed"></div>
     </div>
@@ -53,15 +58,44 @@
     const map = L.map('map').setView([39.8, -98.5], 4);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
     let polyline = L.polyline([], {color: '#3498db', weight: 4}).addTo(map);
+    let markers = [];
     let tripData = JSON.parse(localStorage.getItem('myRoadTrip')) || [];
 
-    tripData.forEach(renderEntry);
+    function init() {
+        // Clear map
+        markers.forEach(m => map.removeLayer(m));
+        markers = [];
+        polyline.setLatLngs([]);
+        document.getElementById('journal-feed').innerHTML = '';
 
-    async function addEntry() {
+        // Render from storage
+        tripData.forEach((e, index) => {
+            const m = L.marker(e.coords).addTo(map).bindPopup(`<b>${e.loc}</b><br>${e.weather || ''}`);
+            markers.push(m);
+            polyline.addLatLng(e.coords);
+            
+            const div = document.createElement('div');
+            div.className = 'log-entry';
+            div.innerHTML = `
+                <strong>${e.date} — ${e.loc}</strong><p>${e.sum}</p>
+                <span class="weather-tag">☁️ ${e.weather || 'No data'}</span>
+                <div class="entry-controls">
+                    <button class="btn btn-edit" onclick="editEntry(${index})">Edit</button>
+                    <button class="btn btn-del" onclick="deleteEntry(${index})">Delete</button>
+                </div>
+            `;
+            document.getElementById('journal-feed').prepend(div);
+        });
+        if(tripData.length > 0) map.panTo(tripData[tripData.length-1].coords);
+    }
+
+    async function handleSubmit() {
         const loc = document.getElementById('location').value;
         const date = document.getElementById('date').value;
         const sum = document.getElementById('summary').value;
-        if(!loc || !sum) return alert("Fill in details!");
+        const editIdx = parseInt(document.getElementById('edit-index').value);
+
+        if(!loc || !sum) return alert("Please fill in location and summary.");
 
         const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${loc}`);
         const geoData = await geoRes.json();
@@ -69,52 +103,35 @@
         if(geoData[0]) {
             const lat = geoData[0].lat;
             const lon = geoData[0].lon;
-            
-            // Fetch Weather for those coordinates
+            let weatherStr = "No data";
+
+            // Only fetch weather if it's a new entry or location changed
             const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
             const weatherData = await weatherRes.json();
-            const temp = Math.round(weatherData.current_weather.temperature * 9/5 + 32); // Convert C to F
-            const condition = getWeatherDesc(weatherData.current_weather.weathercode);
+            const temp = Math.round(weatherData.current_weather.temperature * 9/5 + 32);
+            weatherStr = `${temp}°F, ${getWeatherDesc(weatherData.current_weather.weathercode)}`;
 
-            const entry = { loc, date, sum, coords: [lat, lon], weather: `${temp}°F, ${condition}` };
-            tripData.push(entry);
+            const entry = { loc, date, sum, coords: [lat, lon], weather: weatherStr };
+
+            if(editIdx > -1) {
+                tripData[editIdx] = entry;
+            } else {
+                tripData.push(entry);
+            }
+
             localStorage.setItem('myRoadTrip', JSON.stringify(tripData));
-            location.reload(); 
+            resetForm();
+            init();
         }
     }
 
-    function renderEntry(e) {
-        L.marker(e.coords).addTo(map).bindPopup(`<b>${e.loc}</b><br>${e.weather || ''}`);
-        polyline.addLatLng(e.coords);
-        const div = document.createElement('div');
-        div.className = 'log-entry';
-        div.innerHTML = `<strong>${e.date} — ${e.loc}</strong><p>${e.sum}</p>
-                         <span class="weather-tag">☁️ ${e.weather || 'No data'}</span>`;
-        document.getElementById('journal-feed').prepend(div);
-    }
-
-    function getWeatherDesc(code) {
-        const codes = { 0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 51: "Drizzle", 61: "Rain", 71: "Snow", 95: "Thunderstorm" };
-        return codes[code] || "Fair";
-    }
-
-    function exportTrip() {
-        const blob = new Blob([JSON.stringify(tripData)], {type: "application/json"});
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `trip_${new Date().toISOString().slice(0,10)}.json`;
-        a.click();
-    }
-
-    function importTrip(event) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            tripData = JSON.parse(e.target.result);
-            localStorage.setItem('myRoadTrip', JSON.stringify(tripData));
-            location.reload();
-        };
-        reader.readAsText(event.target.files[0]);
-    }
-</script>
-</body>
-</html>
+    function editEntry(index) {
+        const e = tripData[index];
+        document.getElementById('location').value = e.loc;
+        document.getElementById('date').value = e.date;
+        document.getElementById('summary').value = e.sum;
+        document.getElementById('edit-index').value = index;
+        document.getElementById('form-title').innerText = "Edit Entry";
+        document.getElementById('submit-btn').innerText = "Update Entry";
+        document.getElementById('cancel-btn').style.display = "block";
+        document.getElementById('sidebar').scrollTop = 0;
